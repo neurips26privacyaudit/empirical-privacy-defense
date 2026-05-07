@@ -1,0 +1,75 @@
+# HAMP mini experiment — idev 5 GPUs (5 nodes x 1 GPU)
+# Focus: binary correctness GAP (mean_in - mean_out), not emp_eps.
+# With small n_reps the statistical test has no power, but the gap shows
+# whether the attack has signal and whether the defense reduces it.
+#
+# Setup (run once at start of session)
+
+module load cuda/12.4
+cd $SCRATCH
+eval "$(conda shell.bash hook)"
+conda activate bb_audit_dpsgd
+cd bb-audit-dpsgd
+
+MASTER_ADDR=$(scontrol show hostnames "$SLURM_NODELIST" | head -n 1)
+
+# ---- [1/3] no defense (baseline) ----
+# Expected: gap > 0  (in-world models memorise mislabeled canary → predict
+#                     wrong label consistently; out-world models never saw it)
+
+srun --nodes=5 --ntasks=5 --ntasks-per-node=1 \
+  torchrun \
+  --nnodes=5 --nproc_per_node=1 \
+  --rdzv_backend=c10d --rdzv_id=1 \
+  --rdzv_endpoint=${MASTER_ADDR}:29500 \
+  parallel_audit_model_hamp.py \
+  --data_name mnist --model_name cnn \
+  --n_reps 400 --n_epochs 100 \
+  --lr 3 --batch_size 4000 \
+  --target_type mislabeled \
+  --seed 0 \
+  --defense_type none \
+  --out $SCRATCH/hamp_mini/none
+
+# ---- [2/3] HAMP test-time-only defense ----
+# Expected: gap ≈ same as none
+# (trains with standard CE so canary is memorised; test-time confidence
+#  randomisation preserves argmax → label-only attack is unaffected)
+
+srun --nodes=5 --ntasks=5 --ntasks-per-node=1 \
+  torchrun \
+  --nnodes=5 --nproc_per_node=1 \
+  --rdzv_backend=c10d --rdzv_id=2 \
+  --rdzv_endpoint=${MASTER_ADDR}:29500 \
+  parallel_audit_model_hamp.py \
+  --data_name mnist --model_name cnn \
+  --n_reps 400 --n_epochs 100 \
+  --lr 3 --batch_size 4000 \
+  --target_type mislabeled \
+  --seed 0 \
+  --defense_type hamp_testonly \
+  --out $SCRATCH/hamp_mini/hamp
+
+# ---- [3/3] gradient-norm filter + ascent ----
+# Expected: gap ≈ 0
+# (mislabeled canary has persistently high grad norm → detected each epoch,
+#  gradient ascent applied → model unlearns the canary → in/out converge)
+
+srun --nodes=5 --ntasks=5 --ntasks-per-node=1 \
+  torchrun \
+  --nnodes=5 --nproc_per_node=1 \
+  --rdzv_backend=c10d --rdzv_id=3 \
+  --rdzv_endpoint=${MASTER_ADDR}:29500 \
+  parallel_audit_model_hamp.py \
+  --data_name mnist --model_name cnn \
+  --n_reps 100 --n_epochs 100 \
+  --lr 3 --batch_size 4000 \
+  --target_type mislabeled \
+  --seed 0 \
+  --defense_type filter \
+  --defense_k 5 --defense_apply_ascent \
+  --out $SCRATCH/hamp_mini/filter
+
+# ---- compare (look at the gap column) ----
+
+python compare_hamp_results.py --out_root $SCRATCH/hamp_mini

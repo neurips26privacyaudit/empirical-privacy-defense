@@ -1,0 +1,115 @@
+#!/bin/bash
+set -e
+
+OUTPUT_DIR="grad_cancel_test"
+EPSILON=10
+DELTA=1e-5
+MAX_GRAD_NORM=1.0
+N_REPS=400
+N_NODES=5
+MASTER_ADDR=$(scontrol show hostnames "$SLURM_NODELIST" | head -n 1)
+MASTER_PORT=29500
+
+# Gradient cancelling attack on MNIST/CNN, private regime (eps=10), 5-GPU idev run.
+#
+# Design (same as run_gradient_cancel_test.sh):
+#   alpha=0.1, beta=9.0, max_grad_norm=1.0
+#   Cancellation: 2000 * 0.1 = 200 * 1.0 = 200 ✓
+#   Defense scores by unclipped L∞ grad norm; beta=9.0 >> threshold → Group B filtered.
+
+echo "=========================================="
+echo "Step 0: Check natural gradient norm distribution"
+echo "=========================================="
+python check_gradient_norms.py \
+    --data_name mnist \
+    --model_name cnn \
+    --n_samples 500 \
+    --device cuda:0
+
+echo "=========================================="
+echo "Step 1: Generate gradient cancelling canaries"
+echo "=========================================="
+python generate_gradient_cancelling_attack.py \
+    --model_name cnn \
+    --data_name mnist \
+    --n_epochs 5 \
+    --lr 3 \
+    --max_grad_norm "${MAX_GRAD_NORM}" \
+    --batch_size 4000 \
+    --block_size 4000 \
+    --n_group_a 2000 \
+    --n_group_b 200 \
+    --alpha 0.1 \
+    --beta 9.0 \
+    --defense_k 5 \
+    --output_dir "${OUTPUT_DIR}" \
+    --device cuda:0
+
+echo "=========================================="
+echo "Step 2: Audit WITHOUT defense (expect no gap) — ${N_NODES} nodes, ${N_REPS} reps"
+echo "=========================================="
+srun --nodes=${N_NODES} --ntasks=${N_NODES} --ntasks-per-node=1 \
+    torchrun \
+    --nnodes=${N_NODES} \
+    --nproc_per_node=1 \
+    --rdzv_backend=c10d \
+    --rdzv_id=${SLURM_JOB_ID}_1 \
+    --rdzv_endpoint=${MASTER_ADDR}:${MASTER_PORT} \
+    parallel_audit_multi_canary.py \
+    --data_name mnist \
+    --model_name cnn \
+    --n_reps ${N_REPS} \
+    --n_epochs 100 \
+    --lr 3 \
+    --batch_size 4000 \
+    --block_size 4000 \
+    --epsilon "${EPSILON}" \
+    --delta "${DELTA}" \
+    --max_grad_norm "${MAX_GRAD_NORM}" \
+    --sampling poisson \
+    --holdout_audit \
+    --gradient_space_canary_pt "${OUTPUT_DIR}/gradient_space_canaries.pt" \
+    --target_type gradient_space_canary \
+    --gradient_space_score_fn hot_param \
+    --seed 0 \
+    --fixed_init \
+    --out "${OUTPUT_DIR}/audit_no_defense"
+
+echo "=========================================="
+echo "Step 3: Audit WITH defense (expect gap) — ${N_NODES} nodes, ${N_REPS} reps"
+echo "=========================================="
+srun --nodes=${N_NODES} --ntasks=${N_NODES} --ntasks-per-node=1 \
+    torchrun \
+    --nnodes=${N_NODES} \
+    --nproc_per_node=1 \
+    --rdzv_backend=c10d \
+    --rdzv_id=${SLURM_JOB_ID}_2 \
+    --rdzv_endpoint=${MASTER_ADDR}:$((MASTER_PORT + 1)) \
+    parallel_audit_multi_canary.py \
+    --data_name mnist \
+    --model_name cnn \
+    --n_reps ${N_REPS} \
+    --n_epochs 100 \
+    --lr 3 \
+    --batch_size 4000 \
+    --block_size 4000 \
+    --epsilon "${EPSILON}" \
+    --delta "${DELTA}" \
+    --max_grad_norm "${MAX_GRAD_NORM}" \
+    --sampling poisson \
+    --holdout_audit \
+    --gradient_space_canary_pt "${OUTPUT_DIR}/gradient_space_canaries.pt" \
+    --target_type gradient_space_canary \
+    --gradient_space_score_fn hot_param \
+    --seed 0 \
+    --fixed_init \
+    --defense \
+    --defense_k 5 \
+    --defense_score_fn grad_norm_unclipped \
+    --defense_score_norm linf \
+    --out "${OUTPUT_DIR}/audit_defense"
+
+echo "=========================================="
+echo "Step 4: Compare mean MIA scores"
+echo "=========================================="
+python compare_cancel_scores.py "${OUTPUT_DIR}"

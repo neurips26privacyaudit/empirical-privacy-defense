@@ -1,0 +1,48 @@
+MASTER_ADDR=$(scontrol show hostnames "$SLURM_NODELIST" | head -n 1)
+
+# Generate random binary canary in Purchase feature space (600 dims). Deterministic.
+CANARY_PATH="purchase_audit/random_input_canary.npy"
+mkdir -p purchase_audit
+python -c "
+import numpy as np
+np.random.seed(42)
+x = np.random.randint(0, 2, size=(1, 600)).astype(np.float32)
+np.save('${CANARY_PATH}', x)
+print(f'Canary: shape={x.shape}, mean={x.mean():.3f}, path=${CANARY_PATH}')
+"
+
+# Non-private, no defense
+srun --nodes=5 --ntasks=5 --ntasks-per-node=1 torchrun --nnodes=5 --nproc_per_node=1 --rdzv_backend=c10d --rdzv_id=${SLURM_JOB_ID}_1 --rdzv_endpoint=${MASTER_ADDR}:29500 parallel_audit_model.py --data_name purchase --model_name mlp --n_df 153801 --n_reps 400 --n_epochs 100 --lr 0.5 --batch_size 12143 --block_size 12143 --aug_mult 1 --epsilon -1 --max_grad_norm -1 --sampling poisson --holdout_audit --target_type ${CANARY_PATH} --seed 0 --fixed_init --out purchase_audit/random_np_no_defense
+
+# Non-private, defense
+srun --nodes=5 --ntasks=5 --ntasks-per-node=1 torchrun --nnodes=5 --nproc_per_node=1 --rdzv_backend=c10d --rdzv_id=${SLURM_JOB_ID}_2 --rdzv_endpoint=${MASTER_ADDR}:29501 parallel_audit_model.py --data_name purchase --model_name mlp --n_df 153801 --n_reps 400 --n_epochs 100 --lr 0.5 --batch_size 12143 --block_size 12143 --aug_mult 1 --epsilon -1 --max_grad_norm -1 --sampling poisson --holdout_audit --target_type ${CANARY_PATH} --seed 0 --fixed_init --defense --defense_k 1 --defense_score_fn grad_norm_unclipped --defense_score_norm linf --out purchase_audit/random_np_defense
+
+# eps=2, no defense, done
+srun --nodes=8 --ntasks=8 --ntasks-per-node=1 torchrun --nnodes=8 --nproc_per_node=1 --rdzv_backend=c10d --rdzv_id=${SLURM_JOB_ID}_3 --rdzv_endpoint=${MASTER_ADDR}:29502 parallel_audit_model.py --data_name purchase --model_name mlp --n_df 153801 --n_reps 400 --n_epochs 100 --lr 10 --batch_size 12143 --block_size 12143 --aug_mult 1 --epsilon 2 --delta 1e-5 --max_grad_norm 1.0 --sampling poisson --holdout_audit --target_type ${CANARY_PATH} --seed 0 --fixed_init --out purchase_audit/random_eps2_no_defense
+
+# eps=2, defense
+srun --nodes=8 --ntasks=8 --ntasks-per-node=1 torchrun --nnodes=8 --nproc_per_node=1 --rdzv_backend=c10d --rdzv_id=${SLURM_JOB_ID}_4 --rdzv_endpoint=${MASTER_ADDR}:29503 parallel_audit_model.py --data_name purchase --model_name mlp --n_df 153801 --n_reps 400 --n_epochs 100 --lr 10 --batch_size 12143 --block_size 12143 --aug_mult 1 --epsilon 2 --delta 1e-5 --max_grad_norm 1.0 --sampling poisson --holdout_audit --target_type ${CANARY_PATH} --seed 0 --fixed_init --defense --defense_k 1 --defense_score_fn grad_norm_unclipped --defense_score_norm linf --out purchase_audit/random_eps2_defense
+
+# eps=4, no defense
+srun --nodes=8 --ntasks=8 --ntasks-per-node=1 torchrun --nnodes=8 --nproc_per_node=1 --rdzv_backend=c10d --rdzv_id=${SLURM_JOB_ID}_5 --rdzv_endpoint=${MASTER_ADDR}:29504 parallel_audit_model.py --data_name purchase --model_name mlp --n_df 153801 --n_reps 400 --n_epochs 100 --lr 10 --batch_size 12143 --block_size 12143 --aug_mult 1 --epsilon 4 --delta 1e-5 --max_grad_norm 1.0 --sampling poisson --holdout_audit --target_type ${CANARY_PATH} --seed 0 --fixed_init --out purchase_audit/random_eps4_no_defense
+
+# eps=4, defense
+srun --nodes=8 --ntasks=8 --ntasks-per-node=1 torchrun --nnodes=8 --nproc_per_node=1 --rdzv_backend=c10d --rdzv_id=${SLURM_JOB_ID}_6 --rdzv_endpoint=${MASTER_ADDR}:29505 parallel_audit_model.py --data_name purchase --model_name mlp --n_df 153801 --n_reps 400 --n_epochs 100 --lr 10 --batch_size 12143 --block_size 12143 --aug_mult 1 --epsilon 4 --delta 1e-5 --max_grad_norm 1.0 --sampling poisson --holdout_audit --target_type ${CANARY_PATH} --seed 0 --fixed_init --defense --defense_k 1 --defense_score_fn grad_norm_unclipped --defense_score_norm linf --out purchase_audit/random_eps4_defense
+
+# eps=6, no defense
+srun --nodes=8 --ntasks=8 --ntasks-per-node=1 torchrun --nnodes=8 --nproc_per_node=1 --rdzv_backend=c10d --rdzv_id=${SLURM_JOB_ID}_7 --rdzv_endpoint=${MASTER_ADDR}:29506 parallel_audit_model.py --data_name purchase --model_name mlp --n_df 153801 --n_reps 400 --n_epochs 100 --lr 10 --batch_size 12143 --block_size 12143 --aug_mult 1 --epsilon 6 --delta 1e-5 --max_grad_norm 1.0 --sampling poisson --holdout_audit --target_type ${CANARY_PATH} --seed 0 --fixed_init --out purchase_audit/random_eps6_no_defense
+
+# eps=6, defense
+srun --nodes=8 --ntasks=8 --ntasks-per-node=1 torchrun --nnodes=8 --nproc_per_node=1 --rdzv_backend=c10d --rdzv_id=${SLURM_JOB_ID}_8 --rdzv_endpoint=${MASTER_ADDR}:29507 parallel_audit_model.py --data_name purchase --model_name mlp --n_df 153801 --n_reps 400 --n_epochs 100 --lr 10 --batch_size 12143 --block_size 12143 --aug_mult 1 --epsilon 6 --delta 1e-5 --max_grad_norm 1.0 --sampling poisson --holdout_audit --target_type ${CANARY_PATH} --seed 0 --fixed_init --defense --defense_k 1 --defense_score_fn grad_norm_unclipped --defense_score_norm linf --out purchase_audit/random_eps6_defense
+
+# eps=8, no defense
+srun --nodes=8 --ntasks=8 --ntasks-per-node=1 torchrun --nnodes=8 --nproc_per_node=1 --rdzv_backend=c10d --rdzv_id=${SLURM_JOB_ID}_9 --rdzv_endpoint=${MASTER_ADDR}:29508 parallel_audit_model.py --data_name purchase --model_name mlp --n_df 153801 --n_reps 400 --n_epochs 100 --lr 10 --batch_size 12143 --block_size 12143 --aug_mult 1 --epsilon 8 --delta 1e-5 --max_grad_norm 1.0 --sampling poisson --holdout_audit --target_type ${CANARY_PATH} --seed 0 --fixed_init --out purchase_audit/random_eps8_no_defense
+
+# eps=8, defense
+srun --nodes=8 --ntasks=8 --ntasks-per-node=1 torchrun --nnodes=8 --nproc_per_node=1 --rdzv_backend=c10d --rdzv_id=${SLURM_JOB_ID}_10 --rdzv_endpoint=${MASTER_ADDR}:29509 parallel_audit_model.py --data_name purchase --model_name mlp --n_df 153801 --n_reps 400 --n_epochs 100 --lr 10 --batch_size 12143 --block_size 12143 --aug_mult 1 --epsilon 8 --delta 1e-5 --max_grad_norm 1.0 --sampling poisson --holdout_audit --target_type ${CANARY_PATH} --seed 0 --fixed_init --defense --defense_k 1 --defense_score_fn grad_norm_unclipped --defense_score_norm linf --out purchase_audit/random_eps8_defense
+
+# eps=10, no defense
+srun --nodes=8 --ntasks=8 --ntasks-per-node=1 torchrun --nnodes=8 --nproc_per_node=1 --rdzv_backend=c10d --rdzv_id=${SLURM_JOB_ID}_11 --rdzv_endpoint=${MASTER_ADDR}:29510 parallel_audit_model.py --data_name purchase --model_name mlp --n_df 153801 --n_reps 400 --n_epochs 100 --lr 10 --batch_size 12143 --block_size 12143 --aug_mult 1 --epsilon 10 --delta 1e-5 --max_grad_norm 1.0 --sampling poisson --holdout_audit --target_type ${CANARY_PATH} --seed 0 --fixed_init --out purchase_audit/random_eps10_no_defense
+
+# eps=10, defense
+srun --nodes=8 --ntasks=8 --ntasks-per-node=1 torchrun --nnodes=8 --nproc_per_node=1 --rdzv_backend=c10d --rdzv_id=${SLURM_JOB_ID}_12 --rdzv_endpoint=${MASTER_ADDR}:29511 parallel_audit_model.py --data_name purchase --model_name mlp --n_df 153801 --n_reps 400 --n_epochs 100 --lr 10 --batch_size 12143 --block_size 12143 --aug_mult 1 --epsilon 10 --delta 1e-5 --max_grad_norm 1.0 --sampling poisson --holdout_audit --target_type ${CANARY_PATH} --seed 0 --fixed_init --defense --defense_k 1 --defense_score_fn grad_norm_unclipped --defense_score_norm linf --out purchase_audit/random_eps10_defense
